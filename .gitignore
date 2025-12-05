@@ -2,7 +2,7 @@
 venv/
 env/
 ENV/
-.venv
+.venv/
 
 # Python
 __pycache__/
@@ -12,7 +12,7 @@ __pycache__/
 .Python
 
 # Jupyter Notebook
-.ipynb_checkpoints
+.ipynb_checkpoints/
 
 # Dataset (gambar besar, jangan push ke GitHub)
 dataset/train/
@@ -23,13 +23,15 @@ dataset/validation/
 
 # Model files (file besar)
 models/*.hdf5
+models/*.h5
 models/*.keras
+models/*.tflite
 
 # Training outputs
 *.png
 *.csv
-!class_labels.json
-!requirements.txt
+training_log.csv
+training_history.png
 
 # IDE
 .vscode/
