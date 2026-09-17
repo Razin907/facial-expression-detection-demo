@@ -2,13 +2,14 @@
 Configuration file for Facial Expression Detection
 """
 
+import json
 import os
 
 # Detect Kaggle Environment
 IS_KAGGLE = os.path.exists('/kaggle/input')
 
-# Paths
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Paths - Project Root
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 if IS_KAGGLE:
     # Kaggle Paths
@@ -66,3 +67,29 @@ WINDOW_NAME = 'Facial Expression Detection'
 # Face Detection Settings
 DETECTION_CONFIDENCE = 0.5
 TRACKING_CONFIDENCE = 0.5
+
+
+def load_labels():
+    """Mapping {str(idx): label} dari LABELS_PATH, fallback DEFAULT_LABELS.
+
+    Sumber kebenaran adalah file yang ditulis train.py dari
+    flow_from_directory.class_indices (urutan alfabetis) — jangan hardcode
+    DEFAULT_LABELS di consumer. Dukung dua format: {idx: label} (train.py)
+    dan legacy {label: idx}. (json + os = stdlib ringan, aman di top-level.)
+    """
+    fallback = dict(DEFAULT_LABELS)
+    if not LABELS_PATH or not os.path.exists(LABELS_PATH):
+        return fallback
+    try:
+        with open(LABELS_PATH, "r") as f:
+            data = json.load(f)
+        if data and all(str(k).isdigit() for k in data.keys()):
+            normalized = {str(k): str(v) for k, v in data.items()}
+        else:
+            normalized = {str(v): str(k) for k, v in data.items()}
+        if len(normalized) != int(NUM_CLASSES):
+            return fallback
+        return normalized
+    except (OSError, ValueError):
+        return fallback
+

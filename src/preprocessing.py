@@ -5,20 +5,55 @@ Script untuk pra-pemrosesan data dan augmentasi
 import os
 import cv2
 import numpy as np
-import tensorflow as tf
-import mediapipe as mp
 
-# ImageDataGenerator masih tersedia di tf.keras.preprocessing.image
-# Meskipun deprecated warning muncul, fungsinya masih bekerja normal
-ImageDataGenerator = tf.keras.preprocessing.image.ImageDataGenerator
+# NOTE: `mediapipe` dan `tensorflow` diimport lazy di dalam fungsi/class.
+# Alasan: AGENTS.md mewajibkan heavy deps (TF/matplotlib) lazy agar
+# `--help` jalan tanpa install; plus MediaPipe >= 0.10.30 menghapus
+# legacy API `mp.solutions`, sehingga import top-level harus dihindari.
+
+
+def _get_image_data_generator():
+    """Import lazy ImageDataGenerator (butuh TF hanya saat training/eval)."""
+    try:
+        import tensorflow as tf
+    except ImportError as e:
+        raise ImportError(
+            "tensorflow belum terinstall. Jalankan: pip install -r requirements.txt"
+        ) from e
+    return tf.keras.preprocessing.image.ImageDataGenerator
+
+
+def _load_mediapipe_solutions():
+    """Import mediapipe + kembalikan modul solutions, atau raise pesan jelas."""
+    try:
+        import mediapipe as mp
+    except ImportError as e:
+        raise ImportError(
+            "mediapipe belum terinstall. Jalankan: pip install mediapipe"
+        ) from e
+    solutions = getattr(mp, "solutions", None)
+    if solutions is None or not hasattr(solutions, "face_detection"):
+        version = getattr(mp, "__version__", "unknown")
+        raise AttributeError(
+            f"mediapipe v{version} tidak lagi menyediakan `mp.solutions` "
+            "(dihapus sejak 0.10.30). Pilih salah satu:\n"
+            '  1. Otomatis pakai fallback Haar Cascade (tanpa install apa pun), via create_face_detector()\n'
+            '  2. Downgrade: pip install "mediapipe==0.10.21"\n'
+            "  3. Migrasi ke MediaPipe Tasks API (butuh file model .task)"
+        )
+    return solutions
 
 
 class MediaPipeFaceDetector:
     """
-    Face detector using MediaPipe
+    Face detector using MediaPipe (legacy Solutions API, mediapipe < 0.10.30).
+
+    Untuk kode yang tahan versi, gunakan create_face_detector() yang otomatis
+    fallback ke Haar Cascade bila `mp.solutions` tidak tersedia.
     """
     def __init__(self, min_detection_confidence=0.5):
-        self.mp_face_detection = mp.solutions.face_detection
+        solutions = _load_mediapipe_solutions()
+        self.mp_face_detection = solutions.face_detection
         self.face_detection = self.mp_face_detection.FaceDetection(
             min_detection_confidence=min_detection_confidence
         )
@@ -54,8 +89,60 @@ class MediaPipeFaceDetector:
                 height = min(h - y, height)
                 
                 faces.append((x, y, width, height))
-                
+
         return faces
+
+
+class HaarFaceDetector:
+    """
+    Face detector menggunakan Haar Cascade (OpenCV bawaan).
+
+    Interface sama dengan MediaPipeFaceDetector: detect_faces(image BGR)
+    -> [(x, y, w, h), ...]. Dipakai sebagai fallback otomatis bila
+    MediaPipe tidak tersedia / versinya tanpa `mp.solutions`.
+    """
+    def __init__(self, scale_factor=1.1, min_neighbors=5, min_size=(30, 30)):
+        self.face_cascade = load_haarcascade()
+        self.scale_factor = scale_factor
+        self.min_neighbors = min_neighbors
+        self.min_size = min_size
+
+    def detect_faces(self, image):
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image
+        faces = self.face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=self.scale_factor,
+            minNeighbors=self.min_neighbors,
+            minSize=self.min_size,
+        )
+        return [(int(x), int(y), int(w), int(h)) for (x, y, w, h) in faces]
+
+
+def create_face_detector(min_detection_confidence=0.5, prefer="mediapipe"):
+    """Factory detektor wajah yang tahan versi MediaPipe.
+
+    - Coba MediaPipe (legacy Solutions API) bila diminta & tersedia.
+    - Jika gagal (mis. mediapipe >= 0.10.30 tanpa `mp.solutions`),
+      otomatis fallback ke Haar Cascade dengan pesan peringatan.
+
+    Returns: objek dengan metode detect_faces(image) -> [(x, y, w, h), ...].
+    """
+    if prefer == "mediapipe":
+        try:
+            detector = MediaPipeFaceDetector(
+                min_detection_confidence=min_detection_confidence
+            )
+            print("Face detector: MediaPipe")
+            return detector
+        except Exception as e:
+            print(f"Warning: MediaPipe tidak bisa dipakai ({e})")
+            print("Fallback ke Haar Cascade...")
+    detector = HaarFaceDetector()
+    print("Face detector: Haar Cascade")
+    return detector
 
 
 def create_data_generators(train_dir, validation_dir, target_size=(48, 48), 
@@ -73,7 +160,8 @@ def create_data_generators(train_dir, validation_dir, target_size=(48, 48),
     Returns:
         train_generator, validation_generator
     """
-    
+    ImageDataGenerator = _get_image_data_generator()
+
     if augmentation:
         # Data Generator untuk Training dengan Augmentasi AGRESIF
         # Augmentasi lebih kuat untuk improve generalization
@@ -153,12 +241,20 @@ def preprocess_face_for_prediction(face_image, target_size=(48, 48)):
 def load_haarcascade():
     """
     Memuat Haar Cascade classifier untuk deteksi wajah
+
+    Prioritas: aset tracked `models/haarcascade_frontalface_default.xml`
+    (jangan dihapus — lihat AGENTS.md), fallback ke bawaan OpenCV.
     
     Returns:
         Face cascade classifier
     """
-    # Path ke Haar Cascade (OpenCV menyediakan file ini)
-    cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tracked = os.path.join(base_dir, "models", "haarcascade_frontalface_default.xml")
+    if os.path.exists(tracked):
+        cascade_path = tracked
+    else:
+        # Fallback ke bawaan OpenCV bila aset tracked absen
+        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
     
     face_cascade = cv2.CascadeClassifier(cascade_path)
     

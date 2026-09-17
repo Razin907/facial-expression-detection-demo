@@ -1,6 +1,23 @@
-tensorflow==2.17.0
+# TF >= 2.21 wajib: converter TFLite di 2.17 crash untuk model Keras 3
+# (TypeError di tflite_keras_util). Terbukti: 2.17 gagal, 2.21 sukses 91.6%.
+# Upgrade dari 2.17: uninstall dulu paket stale agar resolver tidak konflik:
+#   pip uninstall -y tensorflow-intel tf-keras tensorflow keras
+#   pip install -r requirements.txt
+# (tf_keras tidak lagi dibutuhkan sejak 2.21.)
+tensorflow>=2.21.0
 opencv-python>=4.8.0
 numpy>=1.24.0
 matplotlib>=3.8.0
 scikit-learn>=1.3.0
+# mediapipe bebas (kode tahan versi): bila mp.solutions tersedia dipakai,
+# bila tidak (v0.10.30+) otomatis fallback ke Haar Cascade OpenCV.
+# Untuk memaksa jalur MediaPipe: pip install "mediapipe==0.10.21"
 mediapipe>=0.10.0
+
+# Web demo (Streamlit) & API (FastAPI)
+streamlit>=1.32.0
+fastapi>=0.109.0
+uvicorn[standard]>=0.25.0
+python-multipart>=0.0.9
+# Opsional: tab video realtime di Streamlit (tanpa ini, pakai /realtime via API)
+# streamlit-webrtc>=0.47.0

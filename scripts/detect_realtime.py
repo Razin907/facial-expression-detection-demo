@@ -2,22 +2,36 @@
 Script untuk deteksi ekspresi wajah secara real-time menggunakan webcam
 """
 
+import argparse
 import os
 import sys
 import time
-import cv2
-import numpy as np
-from tensorflow.keras.models import load_model
 
-# Add src to path
+# Add project root and src to path (lightweight — tetap di top-level
+# agar --help jalan tanpa install heavy deps, lihat AGENTS.md)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-# Import modul lokal
-import config
-from preprocessing import (
-    MediaPipeFaceDetector, 
-    preprocess_face_for_prediction
-)
+
+def _lazy_imports():
+    """Import berat (cv2/numpy/modul lokal) secara lazy.
+
+    Dipanggil di awal __init__/main agar `--help` tetap jalan tanpa
+    TF/cv2 terinstall. TF_CPP_MIN_LOG_LEVEL diset sebelum import TF
+    (terjadi lazy di dalam EmotionPredictor).
+    """
+    global cv2, np
+    global config, MultiFaceSmoother, EmotionPredictor
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    import cv2 as _cv2
+    import numpy as _np
+    import config as _config
+    from smoothing import MultiFaceSmoother as _MFS
+    from inference import EmotionPredictor as _EP
+    cv2, np = _cv2, _np
+    config = _config
+    MultiFaceSmoother = _MFS
+    EmotionPredictor = _EP
 
 
 class FPSCounter:
@@ -45,48 +59,27 @@ class ExpressionDetector:
         """
         Inisialisasi detector
         """
+        _lazy_imports()
         print("Memuat model dan classifier...")
-        
-        # Load model
-        if not os.path.exists(config.MODEL_PATH):
-            raise FileNotFoundError(f"Model tidak ditemukan di: {config.MODEL_PATH}")
-        
-        # Load model dengan compile=False untuk menghindari error kompatibilitas
-        self.model = load_model(config.MODEL_PATH, compile=False)
-        print(f"Model dimuat dari: {config.MODEL_PATH}")
-        
-        # Load labels
-        self.class_labels = config.DEFAULT_LABELS
-        print(f"Label kelas: {list(self.class_labels.values())}")
-        
-        # Load face detector (MediaPipe)
-        self.face_detector = MediaPipeFaceDetector(
-            min_detection_confidence=config.DETECTION_CONFIDENCE
+
+        # Single inference path (AGENTS.md): prediksi via EmotionPredictor.
+        # Backend Keras (.h5) eksplisit agar varian script ini tidak
+        # pindah ke TFLite saat artifact .tflite ada. FileNotFoundError
+        # dari predictor ditangani di main().
+        self.predictor = EmotionPredictor(
+            model_path=config.MODEL_PATH,
+            detection_confidence=config.DETECTION_CONFIDENCE,
         )
-        print("Face detector (MediaPipe) dimuat")
-        
+        print(f"Model dimuat dari: {self.predictor.model_path}")
+        print(f"Label kelas: {self.predictor.ordered_labels}")
+        print(f"Face detector: {self.predictor.detector_name}")
+
+        # Temporal smoothing anti-flicker (satu smoother per slot wajah)
+        self.smoother = MultiFaceSmoother(window_size=7, ema_alpha=0.4)
+
         # Colors
         self.colors = config.COLORS
-    
-    def predict_expression(self, face_image):
-        """
-        Prediksi ekspresi dari gambar wajah
-        """
-        # Pra-pemrosesan
-        processed_face = preprocess_face_for_prediction(face_image)
-        
-        # Prediksi
-        predictions = self.model.predict(processed_face, verbose=0)
-        
-        # Ambil kelas dengan probabilitas tertinggi
-        class_idx = np.argmax(predictions[0])
-        confidence = predictions[0][class_idx]
-        
-        # Konversi index ke label
-        expression_label = self.class_labels.get(str(class_idx), 'unknown')
-        
-        return expression_label, confidence
-    
+
     def draw_results(self, frame, x, y, w, h, expression, confidence):
         """
         Gambar kotak dan label pada frame dengan UI yang lebih modern
@@ -130,12 +123,26 @@ class ExpressionDetector:
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1
         )
     
-    def run(self, camera_index=config.CAMERA_INDEX):
+    def run(self, source=None, use_smoothing=True):
         """
-        Jalankan deteksi real-time dari webcam
+        Menjalankan loop utama deteksi
         """
-        print(f"\nMembuka kamera {camera_index}...")
-        cap = cv2.VideoCapture(camera_index)
+        # Resolusi --source: None -> config, digit -> int, path/URL -> str
+        if source is None:
+            video_source = config.CAMERA_INDEX
+        elif isinstance(source, int):
+            video_source = source
+        else:
+            s = str(source).strip()
+            video_source = int(s) if s.isdigit() else s
+        is_camera = isinstance(video_source, int)
+
+        cap = cv2.VideoCapture(video_source)
+        
+        # Pengaturan kualitas kamera (HD 720p)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         
         if not cap.isOpened():
             print("Error: Tidak dapat membuka kamera!")
@@ -165,31 +172,31 @@ class ExpressionDetector:
             # Update FPS
             fps = fps_counter.update()
             
-            # Deteksi wajah (MediaPipe)
-            faces = self.face_detector.detect_faces(frame)
-            
-            # Proses setiap wajah
-            for (x, y, w, h) in faces:
-                # Crop wajah dengan margin sedikit agar tidak terlalu ketat
-                # Margin 10%
-                margin_x = int(w * 0.1)
-                margin_y = int(h * 0.1)
-                
-                x_start = max(0, x - margin_x)
-                y_start = max(0, y - margin_y)
-                x_end = min(frame.shape[1], x + w + margin_x)
-                y_end = min(frame.shape[0], y + h + margin_y)
-                
-                face_roi = frame[y_start:y_end, x_start:x_end]
-                
-                if face_roi.size == 0:
-                    continue
-                
-                # Prediksi ekspresi
-                expression, confidence = self.predict_expression(face_roi)
-                
-                # Gambar hasil
-                self.draw_results(frame, x, y, w, h, expression, confidence)
+            # Deteksi + prediksi via shared backend (wajah terbesar dulu
+            # agar slot smoother stabil; margin 10% seperti crop manual lama)
+            try:
+                results = self.predictor.predict_faces(frame, margin=0.1)
+            except Exception as e:
+                print(f"Warning prediksi gagal: {e}")
+                results = []
+
+            if use_smoothing and results:
+                raw_preds = [(r["label"], r["confidence"],
+                              np.array([r["probs"][lb]
+                                        for lb in self.predictor.ordered_labels]),
+                              self.predictor.ordered_labels) for r in results]
+                smoothed = self.smoother.update(raw_preds)
+                merged = [{**r, "label": lb, "confidence": cf}
+                          for r, (lb, cf) in zip(results, smoothed)]
+            else:
+                if not use_smoothing:
+                    self.smoother.reset()
+                merged = results
+
+            # Gambar hasil
+            for r in merged:
+                x, y, w, h = r["box"]
+                self.draw_results(frame, x, y, w, h, r["label"], r["confidence"])
             
             # Info UI
             # Background untuk info
@@ -203,7 +210,7 @@ class ExpressionDetector:
             
             # Face Count
             cv2.putText(
-                frame, f"Faces: {len(faces)}", (10, 60),
+                frame, f"Faces: {len(merged)}", (10, 60),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2
             )
             
@@ -228,9 +235,14 @@ class ExpressionDetector:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Deteksi ekspresi real-time (Keras)")
+    parser.add_argument("--source", default=None,
+                        help="Index webcam, path video, atau URL stream (default: config.CAMERA_INDEX)")
+    parser.add_argument("--no-smooth", action="store_true", help="Matikan temporal smoothing")
+    args = parser.parse_args()
     try:
         detector = ExpressionDetector()
-        detector.run()
+        detector.run(source=args.source, use_smoothing=not args.no_smooth)
     except KeyboardInterrupt:
         print("\n\nProgram dihentikan oleh user")
     except Exception as e:

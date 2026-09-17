@@ -125,27 +125,25 @@ def test_camera():
 
 
 def test_mediapipe():
-    """Test apakah MediaPipe Face Detection berfungsi"""
+    """Test apakah face detector berfungsi (MediaPipe atau fallback Haar)"""
     print("\n" + "=" * 70)
-    print("TESTING MEDIAPIPE FACE DETECTOR")
+    print("TESTING FACE DETECTOR")
     print("=" * 70)
-    
+
     try:
-        import mediapipe as mp
+        from preprocessing import create_face_detector
         import numpy as np
-        
-        mp_face_detection = mp.solutions.face_detection
-        face_detection = mp_face_detection.FaceDetection(min_detection_confidence=0.5)
-        
-        # Buat dummy image (hitam)
+
+        detector = create_face_detector(min_detection_confidence=0.5)
+
+        # Buat dummy image (hitam) — pastikan tidak crash
         dummy_image = np.zeros((100, 100, 3), dtype=np.uint8)
-        
-        # Process image
-        results = face_detection.process(dummy_image)
-        
-        print("[OK] MediaPipe Face Detection berhasil diinisialisasi")
+        faces = detector.detect_faces(dummy_image)
+
+        print(f"[OK] Face detector berfungsi: {type(detector).__name__}")
+        print(f"  Wajah pada dummy image: {len(faces)} (ekspektasi 0)")
         return True
-        
+
     except Exception as e:
         print(f"[FAIL] Error: {e}")
         return False
@@ -192,7 +190,7 @@ def main():
         "Library Imports": test_imports(),
         "GPU Availability": test_gpu(),
         "Camera Access": test_camera(),
-        "MediaPipe Detector": test_mediapipe(),
+        "Face Detector": test_mediapipe(),
         "Model Building": test_model_building(),
     }
     
