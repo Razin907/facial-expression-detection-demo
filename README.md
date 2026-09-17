@@ -17,9 +17,16 @@ ekspresi-wajah-demo/
 ├── src/                    # Source code utama
 │   ├── config.py           # Konfigurasi aplikasi
 │   ├── model.py            # Arsitektur CNN
-│   └── preprocessing.py    # Preprocessing data
+│   ├── preprocessing.py    # Preprocessing data
+│   ├── smoothing.py        # Temporal smoothing anti-flicker
+│   ├── inference.py        # Helper inference (.h5/.tflite) untuk Web & API
+│   └── api.py              # FastAPI (REST + WebSocket)
+├── app.py                  # Web demo (Streamlit)
+├── Dockerfile              # Container API (port 8000) / Streamlit (8501)
+├── static/realtime.html      # Halaman webcam realtime (via API /realtime)
 ├── scripts/                # Script yang bisa dijalankan
 │   ├── train.py            # Training model
+│   ├── evaluate.py         # Evaluasi: report + confusion matrix -> reports/
 │   ├── detect_realtime.py  # Deteksi real-time (Keras)
 │   ├── detect_tflite.py    # Deteksi real-time (TFLite - lebih cepat)
 │   └── convert_to_tflite.py# Konversi model ke TFLite
@@ -27,7 +34,7 @@ ekspresi-wajah-demo/
 │   └── test_setup.py       # Verifikasi instalasi
 ├── notebooks/              # Jupyter notebooks
 │   └── Kaggle_Training.ipynb
-├── models/                 # Model files (di-gitignore)
+├── models/                 # Model files (di-gitignore, build artifact)
 ├── dataset/                # Dataset (di-gitignore)
 ├── requirements.txt
 └── README.md
@@ -60,6 +67,38 @@ python scripts/detect_tflite.py
 
 # Atau versi Keras (Lebih Lengkap)
 python scripts/detect_realtime.py
+
+# Semua script deteksi/AR mendukung --source dan --no-smooth:
+# python scripts/detect_realtime.py --source 1
+# python scripts/detect_tflite.py --source video.mp4 --no-smooth
+# python scripts/ar_filter.py --source 0
+```
+
+> Catatan: `models/*.tflite` adalah build artifact (di-gitignore) dan
+> tidak ikut ter-clone. Generate dengan `python scripts/convert_to_tflite.py`.
+
+## Evaluasi Model
+
+```powershell
+python scripts/evaluate.py
+# Output: reports/metrics.json + reports/confusion_matrix.png
+```
+
+## Web Demo & API
+
+```powershell
+# Web demo: upload gambar + foto kamera + video realtime (WebRTC)
+streamlit run app.py
+# (tab Realtime butuh: pip install streamlit-webrtc)
+
+# REST + WebSocket API + halaman webcam realtime (tanpa install tambahan)
+uvicorn src.api:app --host 0.0.0.0 --port 8000
+# GET  /health | POST /predict/image | WS /ws/predict
+# Buka http://localhost:8000/realtime untuk deteksi realtime di browser
+
+# Via Docker
+# docker build -t ekspresi-wajah .
+# docker run -p 8000:8000 -v ./models:/app/models ekspresi-wajah
 ```
 
 ## Cara Penggunaan
