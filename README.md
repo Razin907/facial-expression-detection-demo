@@ -29,14 +29,20 @@ ekspresi-wajah-demo/
 │   ├── evaluate.py         # Evaluasi: report + confusion matrix -> reports/
 │   ├── detect_realtime.py  # Deteksi real-time (Keras)
 │   ├── detect_tflite.py    # Deteksi real-time (TFLite - lebih cepat)
-│   └── convert_to_tflite.py# Konversi model ke TFLite
+│   ├── convert_to_tflite.py# Konversi model ke TFLite
+│   ├── ar_filter.py          # Filter emoji AR (EmotionPredictor)
+│   └── download_assets.py    # Unduh aset emoji filter
 ├── tests/                  # Testing
-│   └── test_setup.py       # Verifikasi instalasi
+│   ├── test_setup.py       # Verifikasi instalasi (manual)
+│   ├── test_smoothing.py   # Unit test smoother (unittest)
+│   └── test_labels.py      # Unit test label map (unittest)
 ├── notebooks/              # Jupyter notebooks
 │   └── Kaggle_Training.ipynb
-├── models/                 # Model files (di-gitignore, build artifact)
+├── models/                 # .h5/.tflite build artifact (di-gitignore);
+│                              # class_labels.json + Haar ter-track
 ├── dataset/                # Dataset (di-gitignore)
 ├── requirements.txt
+├── AGENTS.md              # Panduan agen (single-path, lazy import)
 └── README.md
 ```
 
@@ -44,8 +50,8 @@ ekspresi-wajah-demo/
 ### 1. Clone Repository
 
 ```powershell
-git clone https://github.com/Razin907/facial-expression-detection.git
-cd facial-expression-detection
+git clone https://github.com/Razin907/facial-expression-detection-demo.git
+cd facial-expression-detection-demo
 ```
 
 ### 2. Install Dependencies
@@ -76,6 +82,10 @@ python scripts/detect_realtime.py
 
 > Catatan: `models/*.tflite` adalah build artifact (di-gitignore) dan
 > tidak ikut ter-clone. Generate dengan `python scripts/convert_to_tflite.py`.
+>
+> Butuh `tensorflow>=2.21` (converter 2.17 crash untuk model Keras 3).
+> Untuk fidelitas maksimal (float32, ~17MB):
+> `python scripts/convert_to_tflite.py --quantize none`.
 
 ## Evaluasi Model
 
@@ -118,7 +128,7 @@ uvicorn src.api:app --host 0.0.0.0 --port 8000
 | Ekspresi | Label | Warna |
 |----------|-------|-------|
 | 😠 Marah | `marah` | 🔴 Merah |
-| 🤢 Jijik | `jijik` | 🟦 Teal |
+| 🤢 Jijik | `jijik` | Teal (toska) |
 | 😨 Takut | `takut` | 🟣 Ungu |
 | 😊 Senang | `senang` | 🟢 Hijau |
 | 😐 Netral | `netral` | ⚪ Putih |
@@ -134,13 +144,21 @@ uvicorn src.api:app --host 0.0.0.0 --port 8000
 
 ### Error "Model tidak ditemukan"
 **Solusi:**
-- Pastikan file `models/expression_model.tflite` ada.
-- Pastikan Anda menjalankan script dari dalam folder project.
+- Jalankan dari folder project (CWD = repo root).
+- `EmotionPredictor` otomatis memakai `.tflite` bila ada, fallback ke `.h5`;
+  pastikan minimal satu ada di `models/`. Generate `.tflite` dengan
+  `python scripts/convert_to_tflite.py`.
 
 ### Import Error / Module Not Found
 **Solusi:**
 - Pastikan virtual environment aktif (`(.venv)` muncul di terminal).
 - Jalankan ulang `pip install -r requirements.txt`.
+
+### Convert TFLite gagal (TypeError di tflite_keras_util)
+**Solusi:**
+- Upgrade: `pip install -r requirements.txt` (wajib `tensorflow>=2.21`).
+- Jangan set `TF_USE_LEGACY_KERAS=1` untuk model format Keras 3.
+- Script otomatis fallback: from_keras_model -> SavedModel -> concrete function.
 
 ---
 
@@ -175,8 +193,8 @@ python scripts/convert_to_tflite.py
 
 **Razin907**
 - GitHub: [@Razin907](https://github.com/Razin907)
-- Repository: [facial-expression-detection](https://github.com/Razin907/facial-expression-detection)
+- Repository: [facial-expression-detection-demo](https://github.com/Razin907/facial-expression-detection-demo)
 
 ## Contributing
 
-Kontribusi sangat diterima! Silakan buka [Issues](https://github.com/Razin907/facial-expression-detection/issues) atau [Pull Request](https://github.com/Razin907/facial-expression-detection/pulls).
+Kontribusi sangat diterima! Silakan buka [Issues](https://github.com/Razin907/facial-expression-detection-demo/issues) atau [Pull Request](https://github.com/Razin907/facial-expression-detection-demo/pulls).
