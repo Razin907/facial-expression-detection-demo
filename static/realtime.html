@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Realtime — Deteksi Ekspresi Wajah</title>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+
+    body {
+      font-family: system-ui, sans-serif;
+      background: #111;
+      color: #eee;
+      margin: 0;
+      padding: 16px;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      margin: 0 0 4px;
+    }
+
+    p.sub {
+      color: #aaa;
+      margin: 0 0 12px;
+    }
+
+    #wrap {
+      position: relative;
+      display: inline-block;
+      max-width: 100%;
+    }
+
+    video,
+    canvas#overlay {
+      width: min(960px, 96vw);
+      border-radius: 8px;
+    }
+
+    canvas#overlay {
+      position: absolute;
+      left: 0;
+      top: 0;
+    }
+
+    video {
+      transform: scaleX(-1);
+    }
+
+    /* mirror seperti webcam */
+    .row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin: 12px 0;
+    }
+
+    button {
+      padding: 8px 16px;
+      font-size: 1rem;
+      border-radius: 6px;
+      border: 0;
+      cursor: pointer;
+    }
+
+    #btnStart {
+      background: #2e7d32;
+      color: #fff;
+    }
+
+    #btnStop {
+      background: #c62828;
+      color: #fff;
+    }
+
+    .pill {
+      background: #222;
+      border: 1px solid #444;
+      border-radius: 20px;
+      padding: 4px 12px;
+    }
+
+    #faces {
+      margin-top: 8px;
+    }
+
+    .face {
+      background: #1d1d1d;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 6px 10px;
+      margin: 4px 0;
+    }
+
+    #err {
+      color: #ff8a80;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Deteksi Ekspresi Wajah</h1>
+
+  <div class="row">
+    <button id="btnStart">Mulai Kamera</button>
+    <button id="btnStop" disabled>Stop</button>
+    <label>Interval kirim: <input id="interval" type="range" min="100" max="1000" step="50" value="250"> <span
+        id="intervalVal">250</span> ms</label>
+    <label>Kualitas kirim: <select id="quality">
+        <option value="480">480p (ringan)</option>
+        <option value="640" selected>640p (seimbang)</option>
+        <option value="960">960p (jernih)</option>
+      </select></label>
+    <span class="pill">Status: <span id="status">idle</span></span>
+    <span class="pill">Kamera: <span id="camres">-</span></span>
+    <span class="pill">Faces: <span id="count">0</span></span>
+    <span class="pill">RTT: <span id="rtt">-</span></span>
+  </div>
+
+  <div id="wrap">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+  </div>
+  <div id="faces"></div>
+  <p id="err"></p>
+
+  <canvas id="sender" style="display:none"></canvas>
+
+  <script>
+    const video = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const octx = overlay.getContext('2d');
+    const sender = document.getElementById('sender');
+    const sctx = sender.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const countEl = document.getElementById('count');
+    const rttEl = document.getElementById('rtt');
+    const facesEl = document.getElementById('faces');
+    const errEl = document.getElementById('err');
+
+    let ws = null, stream = null, timer = null, busy = false;
+    let lastFaces = [], sentW = 0, sentH = 0, t0 = 0;
+
+    const COLORS = {
+      marah: '#ff3b30', jijik: '#2aa198', takut: '#9b59b6', senang: '#2ecc71',
+      netral: '#ecf0f1', sedih: '#3498db', kaget: '#f1c40f'
+    };
+
+    function wsURL() {
+      const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+      return proto + location.host + '/ws/predict';
+    }
+
+    async function start() {
+      errEl.textContent = '';
+      try {
+        // Minta resolusi HD bila kamera mendukung (browser memilih yang terdekat)
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+          audio: false
+        });
+      } catch (e) {
+        errEl.textContent = 'Kamera tidak bisa diakses: ' + e.message;
+        return;
+      }
+      video.srcObject = stream;
+      await video.play();
+      document.getElementById('camres').textContent = video.videoWidth + 'x' + video.videoHeight;
+
+      // Samakan ukuran overlay dengan tampilan video (mirror: gambar overlay ikut mirror via transform CSS? tidak —
+      // overlay tidak di-mirror, jadi flip koordinat x manual).
+      overlay.width = video.videoWidth;
+      overlay.height = video.videoHeight;
+
+      ws = new WebSocket(wsURL());
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => {
+        statusEl.textContent = 'connected';
+        document.getElementById('btnStart').disabled = true;
+        document.getElementById('btnStop').disabled = false;
+        const ms = +document.getElementById('interval').value;
+        timer = setInterval(sendFrame, ms);
+      };
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        lastFaces = msg.faces || [];
+        countEl.textContent = lastFaces.length;
+        rttEl.textContent = (performance.now() - t0).toFixed(0) + ' ms';
+        busy = false;
+        renderList(lastFaces);
+      };
+      ws.onerror = () => { errEl.textContent = 'WebSocket error. Pastikan API jalan (uvicorn port 8000).'; };
+      ws.onclose = () => { statusEl.textContent = 'closed'; };
+
+      requestAnimationFrame(drawLoop);
+    }
+
+    function sendFrame() {
+      if (!ws || ws.readyState !== WebSocket.OPEN || busy || video.videoWidth === 0) return;
+      busy = true;
+      // Lebar kirim sesuai pilihan; makin besar makin jernih tapi makin berat.
+      // (Upscale tidak menambah detail: dibatasi resolusi asli kamera.)
+      const targetW = Math.min(+document.getElementById('quality').value, video.videoWidth);
+      const scale = targetW / video.videoWidth;
+      sentW = targetW; sentH = Math.round(video.videoHeight * scale);
+      sender.width = sentW; sender.height = sentH;
+      // Mirror manual agar konsisten dengan tampilan
+      sctx.save(); sctx.scale(-1, 1); sctx.drawImage(video, -sentW, 0, sentW, sentH); sctx.restore();
+      t0 = performance.now();
+      sender.toBlob((blob) => {
+        if (blob && ws.readyState === WebSocket.OPEN) ws.send(blob);
+        else busy = false;
+      }, 'image/jpeg', 0.85);
+    }
+
+    function drawLoop() {
+      if (!stream) return;
+      octx.clearRect(0, 0, overlay.width, overlay.height);
+      const sx = overlay.width / sentW, sy = overlay.height / sentH;
+      for (const f of lastFaces) {
+        const [x, y, w, h] = f.box;
+        // Frame dikirim sudah ter-mirror (sama seperti tampilan), jadi
+        // koordinat box server langsung diskala ke overlay tanpa flip ulang.
+        const X = x * sx, Y = y * sy, W = w * sx, H = h * sy;
+        const color = COLORS[f.label] || '#fff';
+        octx.strokeStyle = color; octx.lineWidth = 2;
+        octx.strokeRect(X, Y, W, H);
+        const text = `${f.label.toUpperCase()} ${(f.confidence * 100).toFixed(0)}%`;
+        octx.font = '16px sans-serif';
+        const tw = octx.measureText(text).width;
+        octx.fillStyle = color;
+        octx.fillRect(X, Y - 22, tw + 10, 22);
+        octx.fillStyle = '#000';
+        octx.fillText(text, X + 5, Y - 6);
+      }
+      requestAnimationFrame(drawLoop);
+    }
+
+    function renderList(faces) {
+      facesEl.innerHTML = faces.map((f, i) => {
+        const top = Object.entries(f.probs || {}).sort((a, b) => b[1] - a[1])
+          .slice(0, 3).map(([k, v]) => `${k} ${(v * 100).toFixed(0)}%`).join(' · ');
+        return `<div class="face"><b>Wajah ${i + 1}: ${f.label}</b> (${(f.confidence * 100).toFixed(1)}%)<br><small>${top}</small></div>`;
+      }).join('');
+    }
+
+    function stop() {
+      clearInterval(timer); timer = null;
+      if (ws) { ws.close(); ws = null; }
+      if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+      video.srcObject = null;
+      lastFaces = []; octx.clearRect(0, 0, overlay.width, overlay.height);
+      facesEl.innerHTML = ''; countEl.textContent = '0';
+      statusEl.textContent = 'idle';
+      document.getElementById('btnStart').disabled = false;
+      document.getElementById('btnStop').disabled = true;
+    }
+
+    document.getElementById('btnStart').onclick = start;
+    document.getElementById('btnStop').onclick = stop;
+    document.getElementById('interval').oninput = (e) => {
+      document.getElementById('intervalVal').textContent = e.target.value;
+      if (timer) { clearInterval(timer); timer = setInterval(sendFrame, +e.target.value); }
+    };
+  </script>
+</body>
+
+</html>
